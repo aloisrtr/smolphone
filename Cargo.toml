@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "butler",
+  "legacy_matmul",
+  'offloaded_matmul'
+]
+resolver = "1"

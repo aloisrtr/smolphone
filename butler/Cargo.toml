@@ -1,0 +1,18 @@
+[package]
+name = "butler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rp2040-hal = "0.9.1"
+rp-pico = "0.7.0"
+panic-halt = "0.2.0"
+cortex-m-rt = "0.7.3"
+embedded-hal = "0.2.7"
+cortex-m = "0.7.7"
+usb-device = "0.2.9"
+usbd-serial = "0.1.1"
+usbd-hid = "0.5.2"
+
+[profile.dev]
+opt-level = "z"
