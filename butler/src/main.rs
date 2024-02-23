@@ -1,15 +1,15 @@
 #![no_std]
 #![no_main]
+use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::{option::*, result::*};
 
+use arrayvec::ArrayString;
+use hal::gpio::{bank0::Gpio25, FunctionSio, PullDown, SioOutput};
 use panic_halt as _;
 
 use embedded_hal::digital::v2::OutputPin;
-use rp_pico::hal::{
-    self,
-    gpio::{bank0::Gpio25, Output, PushPull},
-    Clock,
-};
+use rp_pico::hal::{self, Clock};
 use usb_device::{
     class_prelude::UsbBusAllocator,
     prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
@@ -18,7 +18,7 @@ use usb_device::{
 use usbd_serial::SerialPort;
 
 struct Butler {
-    led_pin: hal::gpio::Pin<Gpio25, Output<PushPull>>,
+    led_pin: hal::gpio::Pin<Gpio25, FunctionSio<SioOutput>, PullDown>,
     delay: cortex_m::delay::Delay,
     rosc: hal::pac::ROSC,
 }
@@ -38,12 +38,22 @@ impl Butler {
     }
 }
 
+enum OperatingMode {
+    Main,
+    Butler,
+    Sleep,
+}
+
 static mut USB_DEVICE: Option<UsbDevice<hal::usb::UsbBus>> = None;
 static mut USB_BUS: Option<UsbBusAllocator<hal::usb::UsbBus>> = None;
 static mut USB_SERIAL: Option<SerialPort<hal::usb::UsbBus>> = None;
 static mut LED_INDICATOR: Option<Butler> = None;
 
 /// Initialization code for the MCU, needed by all modes.
+///
+/// This part of the code also implements [trampolining](https://en.wikipedia.org/wiki/Tail_call#Through_trampolining)
+/// to switch between modes effectively without using a huge "match" statement,
+/// making it easier to separate code into manageable chunks.
 #[rp_pico::entry]
 fn init() -> ! {
     let mut pac = hal::pac::Peripherals::take().unwrap();
@@ -90,32 +100,32 @@ fn init() -> ! {
         USB_SERIAL = Some(SerialPort::new(USB_BUS.as_ref().unwrap()));
         USB_DEVICE = Some(
             UsbDeviceBuilder::new(USB_BUS.as_ref().unwrap(), UsbVidPid(0x2e8a, 0x0005))
-                .manufacturer("NotAStartup Inc.")
-                .product("SmolPhone Butler")
-                .serial_number("PQRR")
+                // .manufacturer("NotAStartup Inc.")
+                // .product("SmolPhone Butler")
                 .device_class(2)
                 .build(),
         );
     }
-    // We still mask interrupts since we're not currently using the stack
+    // We still mask interrupts since we're not currently using the USB stack
     hal::pac::NVIC::mask(hal::pac::Interrupt::USBCTRL_IRQ);
 
+    // Modes are switched here. We always boot in main mode.
+    let mut current_mode = mepo_main();
     loop {
-        // LED flashing for 1.5 seconds means start of bench.
-        unsafe { LED_INDICATOR.as_mut().unwrap().flash_led(1500) }
-        main();
-        // LED flashing for .5 seconds means start of butler mode bench.
-        unsafe { LED_INDICATOR.as_mut().unwrap().flash_led(500) }
-        butler();
+        current_mode = match current_mode {
+            OperatingMode::Main => mepo_main(),
+            OperatingMode::Butler => butler(),
+            OperatingMode::Sleep => OperatingMode::Main,
+        }
     }
 }
 
 /// Main mode runs a simple program.
-fn main() {
+fn matmul_main() -> OperatingMode {
     // Safe because interrupts are masked
     let led_indicator = unsafe { LED_INDICATOR.as_mut().unwrap() };
 
-    const SIZE: usize = 256;
+    const SIZE: usize = 128;
     let a = [2u8; SIZE * SIZE];
     let b = [3u8; SIZE * SIZE];
     let mut c = [0u8; SIZE * SIZE];
@@ -127,8 +137,10 @@ fn main() {
     led_indicator.flash_led(100);
 
     // Then run a matrix multiplication of size 256x256 before flashing the LED.
-    matmul(&a, &b, &mut c, SIZE).unwrap();
+    //matmul(&a, &b, &mut c, SIZE).unwrap();
     led_indicator.flash_led(100);
+
+    OperatingMode::Butler
 }
 
 fn matmul(a: &[u8], b: &[u8], c: &mut [u8], size: usize) -> Result<(), ()> {
@@ -142,9 +154,76 @@ fn matmul(a: &[u8], b: &[u8], c: &mut [u8], size: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// Main function that runs a Mepo instance on the performance core while
+/// controlling it using the MCU (local offloading example)
+fn mepo_main() -> OperatingMode {
+    // Safe because interrupts are masked
+    let led_indicator = unsafe { LED_INDICATOR.as_mut().unwrap() };
+
+    let mut zoom = 14;
+
+    let mut lat = 40f32;
+    let mut lon = -70f32;
+
+    let mut max_lat = (lat + 1f32) % 90f32;
+    let mut max_lon = (lon + 1f32) % 180f32;
+    let mut min_lat = (lat - 1f32) % -90f32;
+    let mut min_lon = (lon - 1f32) % -180f32;
+
+    let mut rendered = false;
+    led_indicator.flash_led(500);
+
+    loop {
+        led_indicator.flash_led(100);
+        led_indicator.wait(100);
+        lat += 0.01f32;
+        lon -= 0.002f32;
+
+        if !rendered || lat > max_lat || lon > max_lon || lat < min_lat || lon < min_lon {
+            led_indicator.flash_led(1000);
+            // TODO: Wake performance core
+            // TODO: Wait to be enumerated
+
+            // Send command to update lat and lon
+            unsafe {
+                hal::pac::NVIC::unmask(hal::pac::Interrupt::USBCTRL_IRQ);
+            }
+            let serial = unsafe { USB_SERIAL.as_mut().unwrap() };
+            let mut command: ArrayString<255> = ArrayString::new();
+            write!(
+                &mut command,
+                "prefset_n lat {lat:.4}; prefset_n lon {lon:.4}; prefset_n zoom {zoom};"
+            )
+            .unwrap();
+            let mut command = command.as_bytes();
+
+            led_indicator.flash_led(1000);
+            while !command.is_empty() {
+                serial
+                    .write(command)
+                    .map(|len| command = &command[len..])
+                    .unwrap()
+            }
+            hal::pac::NVIC::mask(hal::pac::Interrupt::USBCTRL_IRQ);
+
+            // TODO: Receive result from performance core and display it
+            // TODO: Shut down performance core
+
+            // Update max and min longitude/latitude
+            max_lat = (lat + 1f32) % 90f32;
+            max_lon = (lon + 1f32) % 180f32;
+            min_lat = (lat - 1f32) % -90f32;
+            min_lon = (lon - 1f32) % -180f32;
+            rendered = true;
+        }
+    }
+
+    OperatingMode::Main
+}
+
 /// Butler mode sets up a USB stack, wakes up the performance core,
 /// then waits to be recognized.
-fn butler() {
+fn butler() -> OperatingMode {
     // Unmask the USB stack's interrupts.
     unsafe {
         hal::pac::NVIC::unmask(hal::pac::Interrupt::USBCTRL_IRQ);
@@ -163,6 +242,8 @@ fn butler() {
 
     // Mask the USB stack's interrupts.
     hal::pac::NVIC::mask(hal::pac::Interrupt::USBCTRL_IRQ);
+
+    OperatingMode::Main
 }
 
 use rp_pico::hal::pac::interrupt;
