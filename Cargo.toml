@@ -1,6 +1,0 @@
-[workspace]
-members = [
-  "butler",
-  "legacy_matmul",
- "offloaded_mepo"]
-resolver = "1"

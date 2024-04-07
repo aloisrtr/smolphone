@@ -1,0 +1,9 @@
+[build]
+target = "arm-unknown-linux-gnueabihf"
+
+[target.arm-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+
+[unstable]
+build-std = [ "core", "compiler_builtins", "alloc" ]
+build-std-features = [ "compiler-builtins-mem" ]

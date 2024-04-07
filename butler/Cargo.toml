@@ -4,16 +4,43 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rp2040-hal = "0.9.0"
-rp-pico = "0.8.0"
-panic-halt = "0.2.0"
-cortex-m-rt = "0.7.3"
-embedded-hal = "0.2.7"
+# General HAL
+rp2040-hal = { version = "0.10.0", features = ["rt", "critical-section-impl"] }
+embedded-hal = "1.0.0"
+rp2040-pac = { version = "0.6.0", features = ["critical-section"] }
+rp2040-boot2 = "0.3.0"
 cortex-m = "0.7.7"
-usb-device = "0.2.9"
-usbd-serial = "0.1.1"
+cortex-m-rt = "0.7.3"
+fugit = "0.3.7"
+critical-section = "1.0.0" 
+
+# USB communication
+usb-device = "0.3.2"
 usbd-hid = "0.5.2"
+usbd-serial = "0.2.1"
+
+# Display
+sharp-memory-display = { version = "0.3", features = ["ls027b7dh01"] }
+slint = { version = "1.4.0", default-features = false, features = ["compat-1-2", "unsafe-single-threaded", "libm"] }
+embedded-graphics = "0.7.1"
+
+# Misc
 arrayvec = { version = "0.7.4", default-features = false }
 
+# Debug
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+[build-dependencies]
+slint-build = "1.4.0"
+
 [profile.dev]
-opt-level = "z"
+codegen-units = 1
+incremental = false
+opt-level = 's'
+
+[profile.release]
+codegen-units = 1
+incremental = false
+opt-level = 's'
