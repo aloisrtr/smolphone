@@ -2,7 +2,7 @@
 target = "thumbv6m-none-eabi"
 
 [target.thumbv6m-none-eabi]
-runner = "probe-rs run --chip RP2040 --protocol swd"
+runner = "doas probe-rs run --chip RP2040 --protocol swd"
 # runner = "elf2uf2-rs -d"
 
 rustflags = [

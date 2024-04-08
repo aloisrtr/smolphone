@@ -1,17 +1,33 @@
+use serial2::SerialPort;
 use std::time::Duration;
 
 fn main() {
-    let mut mcu = serialport::new("/dev/ttyACM0", 9600).open();
-    while mcu.is_err() {
-        mcu = serialport::new("/dev/ttyACM0", 9600).open();
+    let mut butler = SerialPort::open("/dev/ttyACM0", 9600);
+    let mut buffer = [0u8; 255];
+    while butler.is_err() {
+        butler = SerialPort::open("/dev/ttyACM0", 9600);
     }
     println!("opened mcu");
-    let mut mcu = mcu.unwrap();
-    mcu.write_all(b"ready").unwrap();
+    let butler = butler.unwrap();
+    butler.write_all(b"ready").unwrap();
+
+    // Wait for the butler to respond
+    loop {
+        match butler.read(&mut buffer) {
+            Ok(bytes) => {
+                let received = core::str::from_utf8(&buffer[..bytes]).unwrap().trim();
+                if received == "ready" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    butler.write_all(b"flash").unwrap();
 
     // Idle for some time
-    std::thread::sleep(Duration::from_millis(100));
-    mcu.write_all(b"flash").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    butler.write_all(b"flash").unwrap();
 
     // Then do matmul on 1024x1024
     const SIZE: usize = 1024;
@@ -27,7 +43,8 @@ fn main() {
             }
         }
     }
-    mcu.write_all(b"flash").unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    mcu.write_all(b"exit").unwrap();
+    butler.write_all(b"flash").unwrap();
+
+    std::thread::sleep(Duration::from_millis(500));
+    butler.write_all(b"exit").unwrap();
 }

@@ -8,14 +8,13 @@
 // General HAL
 use hal::Clock;
 use rp2040_hal as hal;
+use usbd_serial::embedded_io::Write;
 
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{option::*, result::*};
 
 use hal::gpio;
 
-use arrayvec::ArrayString;
 use fugit::{HertzU32, RateExtU32};
 
 use embedded_hal::digital::OutputPin;
@@ -42,7 +41,7 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 const CRISTAL_OSCILLATOR_FREQUENCY: HertzU32 = HertzU32::Hz(12_000_000u32);
 
 struct ButlerState {
-    led_pin: gpio::Pin<gpio::bank0::Gpio25, gpio::FunctionSioOutput, gpio::PullDown>,
+    led_pin: gpio::Pin<gpio::bank0::Gpio13, gpio::FunctionSioOutput, gpio::PullDown>,
     performance_core_on_pin:
         gpio::Pin<gpio::bank0::Gpio15, gpio::FunctionSioOutput, gpio::PullDown>,
     waker_pin: gpio::Pin<gpio::bank0::Gpio14, gpio::FunctionSioInput, gpio::PullDown>,
@@ -81,7 +80,12 @@ impl ButlerState {
         self.delay.delay_ms(ms)
     }
 
-    /// Sleeps for a given amount of seconds.
+    /// Sleeps until interrupt.
+    pub fn sleep(&mut self) {
+        cortex_m::asm::wfi();
+    }
+
+    /// Sleeps for a given amount of seconds or until interrupt.
     pub fn sleep_seconds(&mut self, seconds: u8) {
         // Set up our alarm and interrupt
         let now = self.rtc.now().unwrap();
@@ -208,9 +212,10 @@ fn init() -> ! {
 
     clocks.init_default(&xosc, &pll_sys, &pll_usb).unwrap();
 
-    //clocks.rtc_clock.configure_clock(&xosc, 46875.Hz()).unwrap();
     let mut deep_sleep_clocks_config = hal::clocks::ClockGate::default();
     deep_sleep_clocks_config.set_rtc_rtc(true);
+    deep_sleep_clocks_config.set_usb_usbctrl(true);
+    deep_sleep_clocks_config.set_sys_usbctrl(true);
     clocks.configure_sleep_enable(deep_sleep_clocks_config);
 
     // Pins configuration
@@ -221,7 +226,7 @@ fn init() -> ! {
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
-    let led_pin = pins.gpio25.into_push_pull_output();
+    let led_pin = pins.gpio13.into_push_pull_output();
     let performance_core_on_pin = pins.gpio15.into_push_pull_output();
     let waker_pin = pins.gpio14.reconfigure();
     waker_pin.set_dormant_wake_enabled(gpio::Interrupt::EdgeLow, true);
@@ -452,20 +457,16 @@ fn butler() -> OperatingMode {
     }
     let butler = unsafe { BUTLER.as_mut().unwrap() };
 
+    BUTLER_MODE_ON.store(true, Ordering::Relaxed);
+
     // Wake up the performance core.
     butler.write_text("waiting for performance core");
     butler.flash_led(500);
     butler.turn_on_performance_core();
 
-    // Wait for the performance core to recognize the device
-    while !BUTLER_MODE_ON.load(Ordering::Relaxed) {}
-
-    butler.flash_led(500);
-    butler.write_text("butler mode on");
-
     // Keep reading as long as we don't get any stop signal
     while BUTLER_MODE_ON.load(Ordering::Relaxed) {
-        unsafe { BUTLER.as_mut().unwrap().deep_sleep() }
+        butler.sleep()
     }
     // Mask the USB stack's interrupts.
     hal::pac::NVIC::mask(hal::pac::Interrupt::USBCTRL_IRQ);
@@ -518,25 +519,24 @@ unsafe fn USBCTRL_IRQ() {
     if usb_dev.poll(&mut [serial]) {
         let mut buf = [0u8; 64];
         match serial.read(&mut buf) {
-            Err(e) => match e {
-                usb_device::UsbError::WouldBlock => warn!("UsbError: WouldBlock"),
-                usb_device::UsbError::ParseError => warn!("UsbError: ParseError"),
-                usb_device::UsbError::BufferOverflow => warn!("UsbError: BufferOverflow"),
-                usb_device::UsbError::EndpointOverflow => warn!("UsbError: EndpointOverflow"),
-                usb_device::UsbError::EndpointMemoryOverflow => {
-                    warn!("UsbError: EndpointMemoryOverflow")
-                }
-                usb_device::UsbError::InvalidEndpoint => warn!("UsbError: InvalidEndpoint"),
-                usb_device::UsbError::Unsupported => warn!("UsbError: Unsupported"),
-                usb_device::UsbError::InvalidState => warn!("UsbError: InvalidState"),
-            },
+            Err(_e) => {}
             Ok(bytes) => {
                 let received = core::str::from_utf8(&buf[..bytes]).unwrap().trim();
-                info!("received from performance core: {}", received);
                 match received {
-                    "ready" => BUTLER_MODE_ON.store(true, Ordering::Relaxed),
-                    "exit" => BUTLER_MODE_ON.store(false, Ordering::Relaxed),
-                    "flash" => BUTLER.as_mut().unwrap().flash_led(500),
+                    "ready" => {
+                        BUTLER_MODE_ON.store(true, Ordering::Relaxed);
+                        info!("entering butler mode");
+                        BUTLER
+                            .as_mut()
+                            .unwrap()
+                            .write_text("performance core ready");
+                        serial.write_all(b"ready").unwrap();
+                    }
+                    "exit" => {
+                        BUTLER_MODE_ON.store(false, Ordering::Relaxed);
+                        info!("quitting butler mode");
+                    }
+                    "flash" => BUTLER.as_mut().unwrap().flash_led(100),
                     _ => {}
                 }
             }
