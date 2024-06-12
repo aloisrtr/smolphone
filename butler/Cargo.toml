@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # General HAL
-rp2040-hal = { version = "0.10.0", features = ["rt", "critical-section-impl"] }
+rp2040-hal = { path = "/home/aloisrtr/documents/rp-hal/rp2040-hal", features = ["rt", "critical-section-impl"] }
 embedded-hal = "1.0.0"
 rp2040-pac = { version = "0.6.0", features = ["critical-section"] }
 rp2040-boot2 = "0.3.0"

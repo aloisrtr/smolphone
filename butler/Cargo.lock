@@ -1380,8 +1380,6 @@ dependencies = [
 [[package]]
 name = "rp2040-hal"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "449f2ce321925c3931ca8da415d5037ac7882194675d0a7087777b61c31d72b7"
 dependencies = [
  "bitfield 0.14.0",
  "cortex-m",
@@ -1409,13 +1407,10 @@ dependencies = [
 [[package]]
 name = "rp2040-hal-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86479063e497efe1ae81995ef9071f54fd1c7427e04d6c5b84cde545ff672a5e"
 dependencies = [
- "cortex-m-rt",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.55",
 ]
 
 [[package]]

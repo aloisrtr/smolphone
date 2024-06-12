@@ -5,9 +5,11 @@
 #![no_std]
 #![no_main]
 
+use hal::pll::{Locked, PhaseLockedLoop};
 // General HAL
 use hal::Clock;
 use rp2040_hal as hal;
+use rp2040_pac::{PLL_SYS, RESETS};
 use usbd_serial::embedded_io::Write;
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -40,16 +42,21 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
 
 const CRISTAL_OSCILLATOR_FREQUENCY: HertzU32 = HertzU32::Hz(12_000_000u32);
 
-struct ButlerState {
+struct SharedState {
+    // Pins
     led_pin: gpio::Pin<gpio::bank0::Gpio13, gpio::FunctionSioOutput, gpio::PullDown>,
     performance_core_on_pin:
         gpio::Pin<gpio::bank0::Gpio15, gpio::FunctionSioOutput, gpio::PullDown>,
     waker_pin: gpio::Pin<gpio::bank0::Gpio14, gpio::FunctionSioInput, gpio::PullDown>,
+
+    // General clocks
     xosc: Option<hal::xosc::CrystalOscillator<hal::xosc::Stable>>,
-    pll_sys: Option<hal::pll::PhaseLockedLoop<hal::pll::Locked, hal::pac::PLL_SYS>>,
-    pll_usb: Option<hal::pll::PhaseLockedLoop<hal::pll::Locked, hal::pac::PLL_USB>>,
     delay: cortex_m::delay::Delay,
+    pll_sys: Option<PhaseLockedLoop<Locked, PLL_SYS>>,
     rtc: hal::rtc::RealTimeClock,
+    resets: RESETS,
+
+    // Display
     display: MemoryDisplay<
         hal::spi::Spi<
             hal::spi::Enabled,
@@ -65,9 +72,8 @@ struct ButlerState {
         gpio::Pin<gpio::bank0::Gpio6, gpio::FunctionSioOutput, gpio::PullDown>,
     >,
     line: u8,
-    resets: hal::pac::RESETS,
 }
-impl ButlerState {
+impl SharedState {
     /// Flashes the onboard LED for a given amount of time.
     pub fn flash_led(&mut self, ms: u32) {
         self.led_pin.set_high().unwrap();
@@ -134,6 +140,17 @@ impl ButlerState {
         //     Some(hal::pll::start_pll_blocking(dormant_pll_usb, &mut self.resets).unwrap());
     }
 
+    /// Overclocks the RP2040 from its nominal frequency given a multiplier.
+    pub fn overclock(&mut self, freq: HertzU32) {
+        let pll_device = if let Some(pll) = self.pll_sys.take() {
+            pll.free()
+        } else {
+            defmt::panic!()
+        };
+
+        //self.pll_sys = Some(hal::pll::setup_pll_blocking(, ))
+    }
+
     /// Turns on the performance core.
     pub fn turn_on_performance_core(&mut self) {
         self.performance_core_on_pin.set_high().unwrap();
@@ -174,7 +191,7 @@ enum OperatingMode {
 static mut USB_DEVICE: Option<usb_device::device::UsbDevice<hal::usb::UsbBus>> = None;
 static mut USB_BUS: Option<usb_device::class_prelude::UsbBusAllocator<hal::usb::UsbBus>> = None;
 static mut USB_SERIAL: Option<usbd_serial::SerialPort<hal::usb::UsbBus>> = None;
-static mut BUTLER: Option<ButlerState> = None;
+static mut BUTLER: Option<SharedState> = None;
 
 /// Initialization code for the MCU, needed by all modes.
 ///
@@ -254,13 +271,7 @@ fn init() -> ! {
     // Intialization wrap-up
     unsafe {
         USB_BUS = Some(usb_device::class_prelude::UsbBusAllocator::new(
-            hal::usb::UsbBus::new(
-                pac.USBCTRL_REGS,
-                pac.USBCTRL_DPRAM,
-                clocks.usb_clock,
-                true,
-                &mut pac.RESETS,
-            ),
+            hal::usb::UsbBus::new(pac.USBCTRL_REGS, pac.USBCTRL_DPRAM, true, &mut pac.RESETS),
         ));
         USB_SERIAL = Some(usbd_serial::SerialPort::new(USB_BUS.as_ref().unwrap()));
         USB_DEVICE = Some(
@@ -275,14 +286,14 @@ fn init() -> ! {
             .device_class(2)
             .build(),
         );
+        USB_DEVICE.as_mut().unwrap().set_self_powered(false);
 
-        BUTLER = Some(ButlerState {
+        BUTLER = Some(SharedState {
             led_pin,
             performance_core_on_pin,
             waker_pin,
-            pll_sys: Some(pll_sys),
-            pll_usb: Some(pll_usb),
             delay,
+            pll_sys: Some(pll_sys),
             rtc: hal::rtc::RealTimeClock::new(
                 pac.RTC,
                 clocks.rtc_clock,
@@ -311,12 +322,13 @@ fn init() -> ! {
         BUTLER.as_mut().unwrap().write_text("Hello, SmolPhone!");
     }
 
+    unsafe {
+        BUTLER.as_mut().unwrap().flash_led(1000);
+    }
+
     // Modes are switched here. We always boot in main mode.
     let mut current_mode = OperatingMode::Main;
     loop {
-        unsafe {
-            BUTLER.as_mut().unwrap().flash_led(1000);
-        }
         info!("entering mode {:?}", current_mode);
         current_mode = match current_mode {
             OperatingMode::Main => matmul_main(),
@@ -478,7 +490,6 @@ fn butler() -> OperatingMode {
     butler.write_text("waiting for performance core to be unplugged (bad design soz)");
     butler.sleep_seconds(5);
     butler.write_text("assuming it has been unplugged");
-    butler.flash_led(500);
 
     OperatingMode::Main
 }
@@ -536,7 +547,7 @@ unsafe fn USBCTRL_IRQ() {
                         BUTLER_MODE_ON.store(false, Ordering::Relaxed);
                         info!("quitting butler mode");
                     }
-                    "flash" => BUTLER.as_mut().unwrap().flash_led(100),
+                    "flash" => BUTLER.as_mut().unwrap().flash_led(500),
                     _ => {}
                 }
             }
